@@ -1,7 +1,7 @@
 {
   "name": "chemrender",
-  "version": "1.0.3",
-  "description": "Render beautiful 3D structures using Mol*.",
+  "version": "1.0.4",
+  "description": "Render beautiful 3D structures (atoms and molecules) using Mol*.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -12,6 +12,7 @@
   "author": "Ruzal Sitdikov",
   "license": "MIT",
   "dependencies": {
+    "@rdkit/rdkit": "^2026.9.1",
     "molstar": "^4.18.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

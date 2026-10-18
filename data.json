@@ -1,12 +1,16 @@
 {
-  "autoPlayTrajectory": false,
+  "autoPlayTrajectory": true,
   "autoSpinCamera": false,
   "showUIPanels": false,
+  "showQuickToolbar": true,
   "viewerHeight": "400px",
   "supportedExtensions": "pdb, cif, mol, sdf, xyz",
   "showNonCovalent": false,
   "maxPixelRatio": 1,
   "preventAppClick": true,
   "defaultPreset": "auto",
-  "gridMaxFiles": 12
+  "gridMaxFiles": 12,
+  "defaultGridColumns": 4,
+  "poscarSupercell": "1 1 1",
+  "showUnitCell": true
 }
