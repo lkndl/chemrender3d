@@ -2,7 +2,7 @@
 
 **Bring interactive 3D molecules to Obsidian.**
 
-ChemRender3D brings the [Mol*](https://molstar.org/) molecular viewer directly into your vault. Visualize and explore proteins, crystal structures, and small molecules without leaving your notes.
+ChemRender3D brings the [Mol*](https://molstar.org/) molecular viewer directly into your vault. Visualize and explore proteins, crystal structures, atoms and small molecules without leaving your notes.
 
 <img width="800" alt="ChemRender3D demo" src="https://github.com/user-attachments/assets/62d7cec3-1d4e-4330-a980-5836fa31b229" />
 
@@ -20,11 +20,10 @@ ChemRender3D brings the [Mol*](https://molstar.org/) molecular viewer directly i
 📝 Release Notes
 
 **⚡ (1.0.4)**
-- **Extended Chemical & Material Formats:** Directly render solid-state crystal lattices, quantum chemical inputs, and dynamic trajectory files inline.
+- **Extended Chemical & Material Formats**.
 - **2D Structure Mode:** Toggle between responsive 3D viewports and textbook 2D vector diagrams.
 - **Fast 2D Collection Grid:** Folder previews now generate instant vector cards.
 - **Click-to-3D Focus Modal:** Click any molecule in the grid gallery to launch a dedicated 3D inspection window.
-- **Accurate 2D Skeletal Projection:** Corrected methyl and hydrogen geometry to deliver clean textbook diagrams without triangular artifacts.
   
 - Use ```` ```2dmol ```` for any individual molecule, crystal, file, or SMILES:
      ````markdown
@@ -45,6 +44,11 @@ ChemRender3D brings the [Mol*](https://molstar.org/) molecular viewer directly i
      ````
      
   <img width="720" height="698" alt="image" src="https://github.com/user-attachments/assets/00cbdc18-a215-47cd-a7f1-0c08dfb2d6bc" />
+
+2dmol demo:
+
+  <img width="800" height="705" alt="2d and 3d" src="https://github.com/user-attachments/assets/1d203fbb-1fb8-42e8-807d-036382903df3" />
+
 
 
 🗂️ **New Feature: Folder Grid Preview** 
