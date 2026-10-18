@@ -15,6 +15,38 @@ ChemRender3D brings the [Mol*](https://molstar.org/) molecular viewer directly i
 * **Molecular interactions** — Detect hydrogen bonds, salt bridges, and other non-covalent interactions.
 * **Performance controls** — Adjust rendering quality for large molecular structures.
 
+
+
+📝 Release Notes
+
+**⚡ (1.0.4)**
+- **Extended Chemical & Material Formats:** Directly render solid-state crystal lattices, quantum chemical inputs, and dynamic trajectory files inline.
+- **2D Structure Mode:** Toggle between responsive 3D viewports and textbook 2D vector diagrams.
+- **Fast 2D Collection Grid:** Folder previews now generate instant vector cards.
+- **Click-to-3D Focus Modal:** Click any molecule in the grid gallery to launch a dedicated 3D inspection window.
+- **Accurate 2D Skeletal Projection:** Corrected methyl and hydrogen geometry to deliver clean textbook diagrams without triangular artifacts.
+  
+- Use ```` ```2dmol ```` for any individual molecule, crystal, file, or SMILES:
+     ````markdown
+     ```2dmol
+     c1ccccc1
+     ```
+     ````
+     ````markdown
+     ```2dmol
+     [[m-Xylene_.mol]]
+     ```
+     ````
+     ````markdown
+     ```2dmol
+     caffeine
+     ```
+     
+     ````
+     
+  <img width="720" height="698" alt="image" src="https://github.com/user-attachments/assets/00cbdc18-a215-47cd-a7f1-0c08dfb2d6bc" />
+
+
 🗂️ **New Feature: Folder Grid Preview** 
 Want to see all your molecules at a glance? You can now generate a beautiful, responsive gallery of all 3D molecules in a specific folder. 
 Just use this code block:
