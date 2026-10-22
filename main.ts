@@ -149,6 +149,12 @@ function parseEmbedSize(link: string): EmbedSize {
     };
 }
 
+/** Match the host embed element to the viewer, so an inline embed is not left full width. */
+function applyHostWidth(embed: HTMLElement, size: EmbedSize): void {
+    if (size.width) embed.style.width = size.width;
+    else embed.style.removeProperty('width');
+}
+
 /** Split an embed target into the vault path and the size that was asked for. */
 function parseEmbedLink(raw: string): { path: string; size: EmbedSize } {
     const decoded = decodeURIComponent(raw);
@@ -595,6 +601,7 @@ class MolstarRenderChild extends MarkdownRenderChild {
     explicitBondsList: { a1: number; a2: number; type: number }[] = [];
     clickHistory: { sym: string; x: number; y: number; z: number }[] = [];
     inspectorEl: HTMLElement | null = null;
+    rootWrapper: HTMLElement | null = null;
 
     constructor(containerEl: HTMLElement, renderData: RenderData, pluginApp: App, settings: ChemRender3DSettings) {
         super(containerEl);
@@ -605,6 +612,7 @@ class MolstarRenderChild extends MarkdownRenderChild {
 
     async onload() {
         const rootWrapper = this.containerEl.createDiv({ cls: 'chem3d-root-wrapper' });
+        this.rootWrapper = rootWrapper;
         rootWrapper.style.position = 'relative';
         rootWrapper.style.width = this.renderData.width || '100%';
         rootWrapper.style.height = this.renderData.height || this.settings.viewerHeight;
@@ -997,6 +1005,25 @@ class MolstarRenderChild extends MarkdownRenderChild {
             const errDiv = this.containerEl.createDiv({ cls: "color-red", text: `ChemRender3D Error: ${err.message || err}` });
             errDiv.style.padding = '8px';
         }
+    }
+
+    /**
+     * Apply a new embed size to a viewer that is already running. Rebuilding the Mol*
+     * instance for a size change would drop the WebGL context and the loaded structure,
+     * which is both slow and visibly disruptive while the size is being typed.
+     */
+    applySize(size: EmbedSize) {
+        this.renderData.width = size.width;
+        this.renderData.height = size.height;
+
+        if (!this.rootWrapper) return;
+        this.rootWrapper.style.width = size.width || '100%';
+        this.rootWrapper.style.height = size.height || this.settings.viewerHeight;
+
+        // Mol* has a ResizeObserver on the canvas, but it is debounced; ask directly.
+        try {
+            this.pluginInstance?.handleResize();
+        } catch (_) {}
     }
 
     /**
@@ -1483,8 +1510,7 @@ export default class ChemRender3DPlugin extends Plugin {
                     (embed as HTMLElement).empty();
                     embed.appendChild(container); 
                     
-                    // Match the host span to the viewer so the inline embed does not stay full width.
-                    if (size.width) (embed as HTMLElement).style.width = size.width;
+                    applyHostWidth(embed as HTMLElement, size);
 
                     const renderData: RenderData = { type: 'file', content: cleanSrc, sourcePath: context.sourcePath, ...size };
                     context.addChild(new MolstarRenderChild(container, renderData, this.app, this.settings));
@@ -1498,7 +1524,10 @@ export default class ChemRender3DPlugin extends Plugin {
     buildLivePreviewPlugin() {
         const plugin = this;
         return ViewPlugin.fromClass(class {
-            activeEmbeds = new Map<HTMLElement, MolstarRenderChild>();
+            // Obsidian reuses the embed element when only the alias changes, so the
+            // rendered spec is tracked here to tell a resize from a different file.
+            activeEmbeds = new Map<HTMLElement, { child: MolstarRenderChild; path: string; size: EmbedSize }>();
+            pending = new Set<HTMLElement>();
             debounceTimer: number | null = null;
 
             constructor(public view: EditorView) {
@@ -1506,16 +1535,16 @@ export default class ChemRender3DPlugin extends Plugin {
             }
 
             update(update: ViewUpdate) {
-                if (update.docChanged || update.viewportChanged) {
+                if (update.docChanged || update.viewportChanged || update.selectionSet) {
                     if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
                     this.debounceTimer = window.setTimeout(() => this.processEmbeds(), 100);
                 }
             }
 
             processEmbeds() {
-                for (const [el, renderChild] of this.activeEmbeds.entries()) {
+                for (const [el, active] of this.activeEmbeds.entries()) {
                     if (!this.view.dom.contains(el)) {
-                        renderChild.onunload();
+                        active.child.onunload();
                         this.activeEmbeds.delete(el);
                     }
                 }
@@ -1528,28 +1557,57 @@ export default class ChemRender3DPlugin extends Plugin {
                     const { path: cleanSrc } = parseEmbedLink(src);
                     const size = parseEmbedElementSize(embed, src);
 
-                    if (isFileSupported(cleanSrc, plugin.settings)) {
-                        if (embed.hasAttribute('data-chem3d-preview-done')) return;
-                        embed.setAttribute('data-chem3d-preview-done', 'true');
+                    if (!isFileSupported(cleanSrc, plugin.settings)) return;
 
-                        const activeFile = plugin.app.workspace.getActiveFile();
-                        const sourcePath = activeFile ? activeFile.path : "";
-                        
-                        plugin.injectNativeEmbedLivePreview(embed as HTMLElement, cleanSrc, sourcePath, size).then(child => {
-                            if (child) {
-                                this.activeEmbeds.set(embed as HTMLElement, child);
+                    const el = embed as HTMLElement;
+                    if (this.pending.has(el)) return;
+
+                    const active = this.activeEmbeds.get(el);
+                    if (active) {
+                        const stillMounted = el.contains(active.child.containerEl);
+                        if (stillMounted && active.path === cleanSrc) {
+                            // Same file, only the size suffix moved: resize, do not rebuild.
+                            if (active.size.width !== size.width || active.size.height !== size.height) {
+                                applyHostWidth(el, size);
+                                active.child.applySize(size);
+                                active.size = size;
                             }
-                        });
+                            return;
+                        }
+                        active.child.onunload();
+                        this.activeEmbeds.delete(el);
+                        el.removeAttribute('data-chem3d-preview-done');
                     }
+
+                    if (el.hasAttribute('data-chem3d-preview-done')) {
+                        // The marker also keeps the reading-view processor off this element,
+                        // so only step in once the viewer it stood for has actually gone.
+                        if (el.querySelector('.chem3d-root-wrapper')) return;
+                        el.removeAttribute('data-chem3d-preview-done');
+                    }
+
+                    el.setAttribute('data-chem3d-preview-done', 'true');
+                    this.pending.add(el);
+
+                    const activeFile = plugin.app.workspace.getActiveFile();
+                    const sourcePath = activeFile ? activeFile.path : "";
+
+                    plugin.injectNativeEmbedLivePreview(el, cleanSrc, sourcePath, size)
+                        .then(child => {
+                            if (child) this.activeEmbeds.set(el, { child, path: cleanSrc, size });
+                        })
+                        .finally(() => this.pending.delete(el))
+                        .catch(() => {});
                 });
             }
 
             destroy() {
                 if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
-                for (const renderChild of this.activeEmbeds.values()) {
-                    renderChild.onunload();
+                for (const active of this.activeEmbeds.values()) {
+                    active.child.onunload();
                 }
                 this.activeEmbeds.clear();
+                this.pending.clear();
             }
         });
     }
@@ -1568,7 +1626,7 @@ export default class ChemRender3DPlugin extends Plugin {
         embed.empty();
         embed.appendChild(container);
 
-        if (size.width) embed.style.width = size.width;
+        applyHostWidth(embed, size);
 
         const renderData: RenderData = { type: 'file', content: cleanSrc, sourcePath, ...size };
         const renderChild = new MolstarRenderChild(container, renderData, this.app, this.settings);
