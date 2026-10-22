@@ -67,7 +67,7 @@ const DEFAULT_SETTINGS: ChemRender3DSettings = {
     showUIPanels: false,
     showQuickToolbar: true,
     viewerHeight: '400px',
-    supportedExtensions: 'pdb, ent, pdbqt, pqr, cif, mmcif, gro, mol, mol2, sdf, sd, xyz, cube, cub, poscar, contcar, xdatcar, vasp, gjf, com, in, pwi',
+    supportedExtensions: 'pdb, ent, pdbqt, pqr, cif, mmcif, gro, mol, mol2, sdf, sd, xyz, cube, cub, poscar, contcar, xdatcar, vasp, gjf, com, in, pwi, molx, molj',
     showNonCovalent: false,
     maxPixelRatio: 1.0,
     preventAppClick: true,
@@ -100,8 +100,17 @@ const FORMAT_MAP: Record<string, string> = {
     'gjf': 'gaussian',
     'com': 'gaussian',
     'in': 'qe',
-    'pwi': 'qe'
+    'pwi': 'qe',
+    'molx': 'molx',
+    'molj': 'molj'
 };
+
+// Mol* session files (.molx zipped, .molj plain JSON) are whole saved plugin states:
+// they carry their own structures, representations, colours and camera, so they bypass
+// the parse-and-apply-a-preset pipeline the other formats go through.
+function isSessionFormat(format: string | null): boolean {
+    return format === 'molx' || format === 'molj';
+}
 
 function getActiveExtensions(settings: ChemRender3DSettings): string[] {
     return settings.supportedExtensions
@@ -615,6 +624,7 @@ class MolstarRenderChild extends MarkdownRenderChild {
             let rawStringData = "";
             let parsedFormat = "";
             let formulaLabel = "";
+            let sessionFile: TFile | null = null;
 
             if (this.renderData.type === 'raw_vasp') {
                 const supercell = this.renderData.supercell || this.settings.poscarSupercell;
@@ -639,37 +649,44 @@ class MolstarRenderChild extends MarkdownRenderChild {
                     return;
                 }
 
-                const fileText = await this.pluginApp.vault.read(file);
-
-                if (detected === 'mol' || detected === 'sdf') {
-                    const res = parseMolFile(fileText);
-                    this.parsedAtomsList = res.atoms;
-                    this.explicitBondsList = res.bonds;
-                    formulaLabel = res.formula;
-                    rawStringData = fileText;
+                if (isSessionFormat(detected)) {
+                    // .molx is a zip archive, so it must never go through vault.read().
+                    sessionFile = file;
                     parsedFormat = detected;
-                } else if (detected === 'vasp') {
-                    const supercell = this.renderData.supercell || this.settings.poscarSupercell;
-                    const res = convertPoscarToPdb(fileText, supercell);
-                    rawStringData = res.pdbText;
-                    formulaLabel = res.formula;
-                    this.parsedAtomsList = res.atoms;
-                    parsedFormat = 'pdb';
-                } else if (detected === 'xyz' || detected === 'xdatcar') {
-                    const res = convertXyzToPdb(fileText);
-                    rawStringData = res.pdbText;
-                    formulaLabel = res.formula;
-                    this.parsedAtomsList = res.atoms;
-                    parsedFormat = 'pdb';
-                } else if (detected === 'gaussian' || detected === 'qe') {
-                    const res = convertGaussianToPdb(fileText);
-                    rawStringData = res.pdbText;
-                    formulaLabel = res.formula;
-                    this.parsedAtomsList = res.atoms;
-                    parsedFormat = 'pdb';
+                    formulaLabel = file.basename;
                 } else {
-                    rawStringData = fileText;
-                    parsedFormat = detected;
+                    const fileText = await this.pluginApp.vault.read(file);
+
+                    if (detected === 'mol' || detected === 'sdf') {
+                        const res = parseMolFile(fileText);
+                        this.parsedAtomsList = res.atoms;
+                        this.explicitBondsList = res.bonds;
+                        formulaLabel = res.formula;
+                        rawStringData = fileText;
+                        parsedFormat = detected;
+                    } else if (detected === 'vasp') {
+                        const supercell = this.renderData.supercell || this.settings.poscarSupercell;
+                        const res = convertPoscarToPdb(fileText, supercell);
+                        rawStringData = res.pdbText;
+                        formulaLabel = res.formula;
+                        this.parsedAtomsList = res.atoms;
+                        parsedFormat = 'pdb';
+                    } else if (detected === 'xyz' || detected === 'xdatcar') {
+                        const res = convertXyzToPdb(fileText);
+                        rawStringData = res.pdbText;
+                        formulaLabel = res.formula;
+                        this.parsedAtomsList = res.atoms;
+                        parsedFormat = 'pdb';
+                    } else if (detected === 'gaussian' || detected === 'qe') {
+                        const res = convertGaussianToPdb(fileText);
+                        rawStringData = res.pdbText;
+                        formulaLabel = res.formula;
+                        this.parsedAtomsList = res.atoms;
+                        parsedFormat = 'pdb';
+                    } else {
+                        rawStringData = fileText;
+                        parsedFormat = detected;
+                    }
                 }
 
             } else if (this.renderData.type === 'smiles' || this.renderData.type === 'pubchem') {
@@ -721,9 +738,11 @@ class MolstarRenderChild extends MarkdownRenderChild {
                 formulaLabel = `AlphaFold: ${uniprotId}`;
             }
 
-            const data = await this.pluginInstance.builders.data.rawData({ data: rawStringData });
-
-            if (parsedFormat === 'cube') {
+            if (sessionFile) {
+                await this.loadSession(sessionFile);
+                this.attachInteractions();
+            } else if (parsedFormat === 'cube') {
+                const data = await this.pluginInstance.builders.data.rawData({ data: rawStringData });
                 const volume = await this.pluginInstance.builders.volume.parseVolume(data, 'cube');
                 await this.pluginInstance.builders.volume.representation.addIsosurface(volume, {
                     alpha: 0.8,
@@ -736,6 +755,7 @@ class MolstarRenderChild extends MarkdownRenderChild {
                     colorTheme: { name: 'uniform', value: Color(0xff3333) }
                 });
             } else {
+                const data = await this.pluginInstance.builders.data.rawData({ data: rawStringData });
                 const trajectory = await this.pluginInstance.builders.structure.parseTrajectory(data, parsedFormat);
                 const model = await this.pluginInstance.builders.structure.createModel(trajectory);
                 const structure = await this.pluginInstance.builders.structure.createStructure(model);
@@ -762,68 +782,7 @@ class MolstarRenderChild extends MarkdownRenderChild {
                     this.pluginInstance?.canvas3d?.requestCameraReset({ durationMs: 0 });
                 }, 100);
 
-                // Live Hover Feedback
-                this.pluginInstance.behaviors.interaction.hover.subscribe((event: any) => {
-                    const loci = event.current.loci;
-                    if (loci && loci.kind === 'element-loci') {
-                        try {
-                            const unit = loci.elements[0]?.unit;
-                            const idx = loci.elements[0]?.indices[0];
-                            if (unit && idx !== undefined && this.inspectorEl) {
-                                const sym = unit.model.atomicHierarchy.derived.atoms.type_symbol.value(idx);
-                                const x = unit.model.atomicConformation.x[idx];
-                                const y = unit.model.atomicConformation.y[idx];
-                                const z = unit.model.atomicConformation.z[idx];
-                                const info = ELEMENT_DATA[sym] || { name: sym, number: '?' };
-                                this.inspectorEl.style.color = '#38bdf8';
-                                this.inspectorEl.textContent = `🔍 ${info.name} (${sym} #${info.number}) · [${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}] Å`;
-                            }
-                        } catch (_) {}
-                    }
-                });
-
-                // Interactive Atom, Distance & Angle Measurement Tool
-                this.pluginInstance.behaviors.interaction.click.subscribe((event: any) => {
-                    const loci = event.current.loci;
-                    if (loci && loci.kind === 'element-loci') {
-                        try {
-                            const unit = loci.elements[0]?.unit;
-                            const idx = loci.elements[0]?.indices[0];
-                            if (unit && idx !== undefined) {
-                                const sym = unit.model.atomicHierarchy.derived.atoms.type_symbol.value(idx);
-                                const x = unit.model.atomicConformation.x[idx];
-                                const y = unit.model.atomicConformation.y[idx];
-                                const z = unit.model.atomicConformation.z[idx];
-
-                                this.clickHistory.push({ sym, x, y, z });
-
-                                if (this.clickHistory.length === 1 && this.inspectorEl) {
-                                    this.inspectorEl.style.color = '#fde047';
-                                    this.inspectorEl.textContent = `📍 Selected ${sym} · Click next atom to measure`;
-                                    new Notice(`Selected ${sym} [${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]`);
-                                } else if (this.clickHistory.length === 2 && this.inspectorEl) {
-                                    const p1 = this.clickHistory[0], p2 = this.clickHistory[1];
-                                    const dist = Math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2);
-                                    this.inspectorEl.style.color = '#4ade80';
-                                    this.inspectorEl.textContent = `📏 Distance (${p1.sym}—${p2.sym}): ${dist.toFixed(3)} Å`;
-                                    new Notice(`📏 Distance (${p1.sym}—${p2.sym}): ${dist.toFixed(3)} Å\nClick a 3rd atom for bond angle`);
-                                } else if (this.clickHistory.length === 3 && this.inspectorEl) {
-                                    const p1 = this.clickHistory[0], p2 = this.clickHistory[1], p3 = this.clickHistory[2];
-                                    const v1 = { x: p1.x - p2.x, y: p1.y - p2.y, z: p1.z - p2.z };
-                                    const v2 = { x: p3.x - p2.x, y: p3.y - p2.y, z: p3.z - p2.z };
-                                    const dot = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
-                                    const len1 = Math.sqrt(v1.x**2 + v1.y**2 + v1.z**2);
-                                    const len2 = Math.sqrt(v2.x**2 + v2.y**2 + v2.z**2);
-                                    const angle = Math.acos(Math.max(-1, Math.min(1, dot / (len1 * len2)))) * (180 / Math.PI);
-                                    this.inspectorEl.style.color = '#c084fc';
-                                    this.inspectorEl.textContent = `📐 Angle (${p1.sym}—${p2.sym}—${p3.sym}): ${angle.toFixed(1)}°`;
-                                    new Notice(`📐 Angle (${p1.sym}—${p2.sym}—${p3.sym}): ${angle.toFixed(1)}°`);
-                                    this.clickHistory = [];
-                                }
-                            }
-                        } catch (_) {}
-                    }
-                });
+                this.attachInteractions();
             }
 
             const isDark = document.body.classList.contains('theme-dark');
@@ -831,7 +790,9 @@ class MolstarRenderChild extends MarkdownRenderChild {
             
             if (this.pluginInstance.canvas3d) {
                 this.pluginInstance.canvas3d.setProps({
-                    renderer: { backgroundColor: bgColor },
+                    // A session restores the background it was saved with; overriding it
+                    // would stop the viewer from reproducing what the author set up.
+                    ...(sessionFile ? {} : { renderer: { backgroundColor: bgColor } }),
                     pixelScale: this.settings.maxPixelRatio
                 });
 
@@ -944,12 +905,132 @@ class MolstarRenderChild extends MarkdownRenderChild {
                         });
                     }
                 );
+
+                // 4. Snapshot stepper - a session can hold a sequence of states, and
+                // without this only the one it opened on would ever be visible.
+                const snapshots = this.pluginInstance?.managers?.snapshot;
+                const snapshotCount = sessionFile ? (snapshots?.state?.entries?.size ?? 0) : 0;
+                if (snapshotCount > 1) {
+                    const counter = document.createElement('div');
+                    Object.assign(counter.style, {
+                        color: '#d4d4d8',
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '0 3px',
+                        userSelect: 'none'
+                    });
+
+                    const updateCounter = () => {
+                        const current = snapshots.current;
+                        const index = current ? snapshots.getIndex(current) : 0;
+                        counter.textContent = `${index + 1}/${snapshotCount}`;
+                    };
+
+                    const step = async (dir: -1 | 1) => {
+                        try {
+                            await snapshots.applyNext(dir);
+                        } catch (_) {}
+                        updateCounter();
+                    };
+
+                    createBtn(`<path d="M15 18l-6-6 6-6"/>`, 'Previous snapshot', () => { void step(-1); });
+                    toolbar.appendChild(counter);
+                    createBtn(`<path d="M9 18l6-6-6-6"/>`, 'Next snapshot', () => { void step(1); });
+                    updateCounter();
+                }
             }
 
         } catch (err) {
             const errDiv = this.containerEl.createDiv({ cls: "color-red", text: `ChemRender3D Error: ${err.message || err}` });
             errDiv.style.padding = '8px';
         }
+    }
+
+    /**
+     * Load a saved Mol* session (.molx zip / .molj JSON) straight into the plugin state.
+     * Mol*'s own `open` swallows read errors and only logs them, so success is detected
+     * from the `opened` event rather than from the absence of a throw.
+     */
+    async loadSession(file: TFile) {
+        const buffer = await this.pluginApp.vault.readBinary(file);
+        const sessionBlob = new File([buffer], file.name);
+
+        let opened = false;
+        const sub = this.pluginInstance.managers.snapshot.events.opened.subscribe(() => { opened = true; });
+        try {
+            await this.pluginInstance.managers.snapshot.open(sessionBlob);
+        } finally {
+            sub.unsubscribe();
+        }
+
+        if (!opened) throw new Error(`Could not read Mol* session "${file.name}"`);
+    }
+
+    attachInteractions() {
+        // Live Hover Feedback
+        this.pluginInstance.behaviors.interaction.hover.subscribe((event: any) => {
+            const loci = event.current.loci;
+            if (loci && loci.kind === 'element-loci') {
+                try {
+                    const unit = loci.elements[0]?.unit;
+                    const idx = loci.elements[0]?.indices[0];
+                    if (unit && idx !== undefined && this.inspectorEl) {
+                        const sym = unit.model.atomicHierarchy.derived.atoms.type_symbol.value(idx);
+                        const x = unit.model.atomicConformation.x[idx];
+                        const y = unit.model.atomicConformation.y[idx];
+                        const z = unit.model.atomicConformation.z[idx];
+                        const info = ELEMENT_DATA[sym] || { name: sym, number: '?' };
+                        this.inspectorEl.style.color = '#38bdf8';
+                        this.inspectorEl.textContent = `🔍 ${info.name} (${sym} #${info.number}) · [${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}] Å`;
+                    }
+                } catch (_) {}
+            }
+        });
+
+        // Interactive Atom, Distance & Angle Measurement Tool
+        this.pluginInstance.behaviors.interaction.click.subscribe((event: any) => {
+            const loci = event.current.loci;
+            if (loci && loci.kind === 'element-loci') {
+                try {
+                    const unit = loci.elements[0]?.unit;
+                    const idx = loci.elements[0]?.indices[0];
+                    if (unit && idx !== undefined) {
+                        const sym = unit.model.atomicHierarchy.derived.atoms.type_symbol.value(idx);
+                        const x = unit.model.atomicConformation.x[idx];
+                        const y = unit.model.atomicConformation.y[idx];
+                        const z = unit.model.atomicConformation.z[idx];
+
+                        this.clickHistory.push({ sym, x, y, z });
+
+                        if (this.clickHistory.length === 1 && this.inspectorEl) {
+                            this.inspectorEl.style.color = '#fde047';
+                            this.inspectorEl.textContent = `📍 Selected ${sym} · Click next atom to measure`;
+                            new Notice(`Selected ${sym} [${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]`);
+                        } else if (this.clickHistory.length === 2 && this.inspectorEl) {
+                            const p1 = this.clickHistory[0], p2 = this.clickHistory[1];
+                            const dist = Math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2);
+                            this.inspectorEl.style.color = '#4ade80';
+                            this.inspectorEl.textContent = `📏 Distance (${p1.sym}—${p2.sym}): ${dist.toFixed(3)} Å`;
+                            new Notice(`📏 Distance (${p1.sym}—${p2.sym}): ${dist.toFixed(3)} Å\nClick a 3rd atom for bond angle`);
+                        } else if (this.clickHistory.length === 3 && this.inspectorEl) {
+                            const p1 = this.clickHistory[0], p2 = this.clickHistory[1], p3 = this.clickHistory[2];
+                            const v1 = { x: p1.x - p2.x, y: p1.y - p2.y, z: p1.z - p2.z };
+                            const v2 = { x: p3.x - p2.x, y: p3.y - p2.y, z: p3.z - p2.z };
+                            const dot = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+                            const len1 = Math.sqrt(v1.x**2 + v1.y**2 + v1.z**2);
+                            const len2 = Math.sqrt(v2.x**2 + v2.y**2 + v2.z**2);
+                            const angle = Math.acos(Math.max(-1, Math.min(1, dot / (len1 * len2)))) * (180 / Math.PI);
+                            this.inspectorEl.style.color = '#c084fc';
+                            this.inspectorEl.textContent = `📐 Angle (${p1.sym}—${p2.sym}—${p3.sym}): ${angle.toFixed(1)}°`;
+                            new Notice(`📐 Angle (${p1.sym}—${p2.sym}—${p3.sym}): ${angle.toFixed(1)}°`);
+                            this.clickHistory = [];
+                        }
+                    }
+                } catch (_) {}
+            }
+        });
     }
 
     onunload() {
@@ -1002,8 +1083,11 @@ class Molstar2DRenderChild extends MarkdownRenderChild {
         if (this.renderData.type === 'file') {
             const file = resolveVaultFile(this.pluginApp, this.renderData.content, this.renderData.sourcePath);
             if (file) {
-                rawText = await this.pluginApp.vault.read(file);
                 detected = detectFormat(file) || '';
+                // A session holds no plain atom list to flatten, and .molx is binary.
+                if (!isSessionFormat(detected)) {
+                    rawText = await this.pluginApp.vault.read(file);
+                }
             }
         } else if (this.renderData.type === 'raw_vasp') {
             rawText = this.renderData.content;
@@ -1050,7 +1134,8 @@ class Molstar2DRenderChild extends MarkdownRenderChild {
             previewBox.innerHTML = renderOffline2DSvg(atoms, bonds);
             badgeEl.setText(formula);
         } else {
-            previewBox.innerHTML = `<span style="font-size:10px; color:#888;">Preview unavailable</span>`;
+            const message = isSessionFormat(detected) ? 'Mol* session — open in 3D' : 'Preview unavailable';
+            previewBox.innerHTML = `<span style="font-size:10px; color:#888;">${message}</span>`;
         }
 
         card.onclick = (e) => {
@@ -1249,7 +1334,7 @@ export default class ChemRender3DPlugin extends Plugin {
             if (!folder || !('children' in folder)) return;
 
             const files = (folder as any).children
-                .filter((f: any) => f instanceof TFile && detectFormat(f) !== null)
+                .filter((f: any) => f instanceof TFile && detectFormat(f) !== null && !isSessionFormat(detectFormat(f)))
                 .slice(0, this.settings.gridMaxFiles);
 
             if (files.length === 0) {
@@ -1451,7 +1536,7 @@ class ChemRender3DSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('Supported File Extensions')
-            .setDesc('Comma-separated extensions to preview automatically (MOL, SDF, VASP, Gaussian, QE, XYZ, PDB, CIF, Cube are natively supported).')
+            .setDesc('Comma-separated extensions to preview automatically (MOL, SDF, VASP, Gaussian, QE, XYZ, PDB, CIF, Cube and Mol* sessions are natively supported).')
             .addText(text => text
                 .setValue(this.plugin.settings.supportedExtensions)
                 .onChange(async (value) => {

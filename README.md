@@ -9,6 +9,7 @@ ChemRender3D brings the [Mol*](https://molstar.org/) molecular viewer directly i
 ## Features
 
 * **Native embeds** — Render `.pdb`, `.cif`, `.mol`, `.sdf`, `.xyz`, and other supported molecular files.
+* **Mol\* sessions** — Embed a `.molx` or `.molj` session and get back exactly the scene you saved.
 * **SMILES to 3D** — Generate and visualize 3D molecular structures directly from SMILES.
 * **Interactive visualization** — Rotate, zoom, and inspect structures inside your notes.
 * **Multiple representations** — Explore structures using molecular, ribbon, surface, and illustrative styles.
@@ -77,6 +78,24 @@ Embed a supported file directly in your note:
 ```
 
 ChemRender3D automatically replaces the file embed with an interactive 3D viewer.
+
+### Embed a saved Mol* session
+
+A session saved from the Mol* viewer (**State → Download** in Mol*, or the *Save State* control) can be
+dropped into the vault and embedded like any other structure file:
+
+```markdown
+![[binding-site.molx]]
+```
+
+The session restores its own structures, representations, colour themes, background and camera, so the
+viewer reproduces the scene as it was saved rather than applying the plugin's default preset. Both the
+zipped `.molx` and the plain-JSON `.molj` form work.
+
+If the session contains more than one snapshot, `‹ 1/4 ›` buttons appear in the viewer toolbar for
+stepping through them.
+
+Sessions are 3D only — they carry no flat atom list, so `2dmol` and `2d-grid` skip them.
 
 ### Generate a structure from SMILES
 
