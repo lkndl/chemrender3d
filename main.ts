@@ -38,7 +38,12 @@ const ELEMENT_DATA: Record<string, { name: string; number: number; mass: number;
     Ba: { name: 'Barium', number: 56, mass: 137.33, color: '#00C900' }
 };
 
-interface RenderData {
+interface EmbedSize {
+    width?: string;
+    height?: string;
+}
+
+interface RenderData extends EmbedSize {
     type: 'file' | 'smiles' | 'pdb' | 'afdb' | 'pubchem' | 'raw_vasp';
     content: string;
     sourcePath: string;
@@ -126,6 +131,51 @@ function isFileSupported(cleanSrc: string, settings: ChemRender3DSettings): bool
     const lower = cleanSrc.toLowerCase();
     if (lower.includes('poscar') || lower.includes('contcar') || lower.includes('xdatcar')) return true;
     return false;
+}
+
+/**
+ * Read Obsidian's embed size suffix: `|WIDTH` or `|WIDTHxHEIGHT`, in pixels.
+ * Anything before the last `|` is display text, so only the last segment is tried,
+ * and a segment that is not a size (a caption, say) leaves the viewer at its default.
+ */
+function parseEmbedSize(link: string): EmbedSize {
+    const spec = link.split('|').pop()?.trim() || '';
+    const match = spec.match(/^([1-9]\d*)(?:\s*[x\u00d7]\s*([1-9]\d*))?$/i);
+    if (!match) return {};
+    return {
+        width: `${match[1]}px`,
+        // As with images, a width on its own leaves the height alone.
+        height: match[2] ? `${match[2]}px` : undefined
+    };
+}
+
+/** Split an embed target into the vault path and the size that was asked for. */
+function parseEmbedLink(raw: string): { path: string; size: EmbedSize } {
+    const decoded = decodeURIComponent(raw);
+    return {
+        path: decoded.split('#')[0].split('?')[0].split('|')[0].trim(),
+        size: parseEmbedSize(decoded)
+    };
+}
+
+/**
+ * Size of a rendered embed element. Obsidian may leave the suffix in `src`, move it to
+ * `alt`, or split it into `width`/`height` attributes, so all three are checked.
+ */
+function parseEmbedElementSize(embed: Element, src: string): EmbedSize {
+    const widthAttr = embed.getAttribute('width') || '';
+    if (/^[1-9]\d*$/.test(widthAttr)) {
+        const heightAttr = embed.getAttribute('height') || '';
+        return {
+            width: `${widthAttr}px`,
+            height: /^[1-9]\d*$/.test(heightAttr) ? `${heightAttr}px` : undefined
+        };
+    }
+
+    const fromSrc = parseEmbedSize(decodeURIComponent(src));
+    if (fromSrc.width) return fromSrc;
+
+    return parseEmbedSize(embed.getAttribute('alt') || '');
 }
 
 function resolveVaultFile(app: App, linkpath: string, sourcePath: string): TFile | null {
@@ -556,8 +606,9 @@ class MolstarRenderChild extends MarkdownRenderChild {
     async onload() {
         const rootWrapper = this.containerEl.createDiv({ cls: 'chem3d-root-wrapper' });
         rootWrapper.style.position = 'relative';
-        rootWrapper.style.width = '100%';
-        rootWrapper.style.height = this.settings.viewerHeight;
+        rootWrapper.style.width = this.renderData.width || '100%';
+        rootWrapper.style.height = this.renderData.height || this.settings.viewerHeight;
+        rootWrapper.style.maxWidth = '100%';
         rootWrapper.style.borderRadius = '8px';
         rootWrapper.style.overflow = 'hidden';
         rootWrapper.style.border = '1px solid var(--background-modifier-border)';
@@ -1064,7 +1115,7 @@ class Molstar2DRenderChild extends MarkdownRenderChild {
 
     async onload() {
         const card = this.containerEl.createDiv({
-            style: 'width: 220px; background: var(--background-secondary); border-radius: 8px; border: 1px solid var(--background-modifier-border); padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; transition: transform 0.15s, border-color 0.15s; margin: 10px 0;'
+            style: `width: ${this.renderData.width || '220px'}; max-width: 100%; background: var(--background-secondary); border-radius: 8px; border: 1px solid var(--background-modifier-border); padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; transition: transform 0.15s, border-color 0.15s; margin: 10px 0;`
         });
 
         card.onmouseenter = () => { card.style.borderColor = 'var(--interactive-accent)'; card.style.transform = 'translateY(-2px)'; };
@@ -1074,7 +1125,7 @@ class Molstar2DRenderChild extends MarkdownRenderChild {
         const titleEl = card.createDiv({ text: titleText, style: 'font-size: 0.85em; font-weight: bold; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' });
         titleEl.title = titleText;
 
-        const previewBox = card.createDiv({ style: 'height: 140px; width: 100%; display: flex; align-items: center; justify-content: center; background: #ffffff; border-radius: 6px; overflow: hidden;' });
+        const previewBox = card.createDiv({ style: `height: ${this.renderData.height || '140px'}; width: 100%; display: flex; align-items: center; justify-content: center; background: #ffffff; border-radius: 6px; overflow: hidden;` });
         const badgeEl = card.createDiv({ style: 'font-size: 10px; color: var(--text-muted); text-align: center; font-family: monospace;' });
 
         let rawText = '';
@@ -1167,8 +1218,8 @@ export default class ChemRender3DPlugin extends Plugin {
 
             const filenameMatch = trimmed.match(/^!?\[\[(.*?)\]\]$/);
             if (filenameMatch && filenameMatch[1]) {
-                const clean = decodeURIComponent(filenameMatch[1]).split('#')[0].split('|')[0].trim();
-                ctx.addChild(new MolstarRenderChild(el, { type: 'file', content: clean, sourcePath: ctx.sourcePath }, this.app, this.settings));
+                const { path: clean, size } = parseEmbedLink(filenameMatch[1]);
+                ctx.addChild(new MolstarRenderChild(el, { type: 'file', content: clean, sourcePath: ctx.sourcePath, ...size }, this.app, this.settings));
                 return;
             }
 
@@ -1177,6 +1228,7 @@ export default class ChemRender3DPlugin extends Plugin {
                 let target = '';
                 let type: any = 'file';
                 let supercell = undefined;
+                let size: EmbedSize = {};
 
                 for (const line of lines) {
                     const idx = line.indexOf(':');
@@ -1186,12 +1238,19 @@ export default class ChemRender3DPlugin extends Plugin {
                     if (['file', 'pdb', 'afdb', 'pubchem', 'smiles'].includes(k)) {
                         type = k;
                         target = v.replace(/^!?\[\[/, '').replace(/\]\]$/, '');
+                        // Only a vault link can carry a size suffix; a SMILES string may
+                        // legitimately contain '#', which parseEmbedLink would cut off.
+                        if (k === 'file') {
+                            const parsed = parseEmbedLink(target);
+                            target = parsed.path;
+                            size = parsed.size;
+                        }
                     } else if (k === 'supercell') {
                         supercell = v;
                     }
                 }
                 if (target) {
-                    ctx.addChild(new MolstarRenderChild(el, { type, content: target, sourcePath: ctx.sourcePath, supercell }, this.app, this.settings));
+                    ctx.addChild(new MolstarRenderChild(el, { type, content: target, sourcePath: ctx.sourcePath, supercell, ...size }, this.app, this.settings));
                     return;
                 }
             }
@@ -1235,8 +1294,8 @@ export default class ChemRender3DPlugin extends Plugin {
 
             const filenameMatch = trimmed.match(/^!?\[\[(.*?)\]\]$/);
             if (filenameMatch && filenameMatch[1]) {
-                const clean = decodeURIComponent(filenameMatch[1]).split('#')[0].split('|')[0].trim();
-                ctx.addChild(new Molstar2DRenderChild(el, { type: 'file', content: clean, sourcePath: ctx.sourcePath }, this.app, this.settings));
+                const { path: clean, size } = parseEmbedLink(filenameMatch[1]);
+                ctx.addChild(new Molstar2DRenderChild(el, { type: 'file', content: clean, sourcePath: ctx.sourcePath, ...size }, this.app, this.settings));
                 return;
             }
 
@@ -1412,7 +1471,8 @@ export default class ChemRender3DPlugin extends Plugin {
             embeds.forEach((embed) => {
                 const src = embed.getAttribute('src');
                 if (!src) return;
-                const cleanSrc = decodeURIComponent(src).split('#')[0].split('?')[0].split('|')[0].trim();
+                const { path: cleanSrc } = parseEmbedLink(src);
+                const size = parseEmbedElementSize(embed, src);
 
                 if (isFileSupported(cleanSrc, this.settings)) {
                     if (embed.hasAttribute('data-chem3d-preview-done')) return;
@@ -1423,7 +1483,10 @@ export default class ChemRender3DPlugin extends Plugin {
                     (embed as HTMLElement).empty();
                     embed.appendChild(container); 
                     
-                    const renderData: RenderData = { type: 'file', content: cleanSrc, sourcePath: context.sourcePath };
+                    // Match the host span to the viewer so the inline embed does not stay full width.
+                    if (size.width) (embed as HTMLElement).style.width = size.width;
+
+                    const renderData: RenderData = { type: 'file', content: cleanSrc, sourcePath: context.sourcePath, ...size };
                     context.addChild(new MolstarRenderChild(container, renderData, this.app, this.settings));
                 }
             });
@@ -1462,7 +1525,8 @@ export default class ChemRender3DPlugin extends Plugin {
                 embeds.forEach(embed => {
                     const src = embed.getAttribute('src');
                     if (!src) return;
-                    const cleanSrc = decodeURIComponent(src).split('#')[0].split('?')[0].split('|')[0].trim();
+                    const { path: cleanSrc } = parseEmbedLink(src);
+                    const size = parseEmbedElementSize(embed, src);
 
                     if (isFileSupported(cleanSrc, plugin.settings)) {
                         if (embed.hasAttribute('data-chem3d-preview-done')) return;
@@ -1471,7 +1535,7 @@ export default class ChemRender3DPlugin extends Plugin {
                         const activeFile = plugin.app.workspace.getActiveFile();
                         const sourcePath = activeFile ? activeFile.path : "";
                         
-                        plugin.injectNativeEmbedLivePreview(embed as HTMLElement, cleanSrc, sourcePath).then(child => {
+                        plugin.injectNativeEmbedLivePreview(embed as HTMLElement, cleanSrc, sourcePath, size).then(child => {
                             if (child) {
                                 this.activeEmbeds.set(embed as HTMLElement, child);
                             }
@@ -1490,7 +1554,7 @@ export default class ChemRender3DPlugin extends Plugin {
         });
     }
 
-    async injectNativeEmbedLivePreview(embed: HTMLElement, cleanSrc: string, sourcePath: string): Promise<MolstarRenderChild | null> {
+    async injectNativeEmbedLivePreview(embed: HTMLElement, cleanSrc: string, sourcePath: string, size: EmbedSize = {}): Promise<MolstarRenderChild | null> {
         const file = resolveVaultFile(this.app, cleanSrc, sourcePath);
         if (!file) {
             embed.empty();
@@ -1504,7 +1568,9 @@ export default class ChemRender3DPlugin extends Plugin {
         embed.empty();
         embed.appendChild(container);
 
-        const renderData: RenderData = { type: 'file', content: cleanSrc, sourcePath };
+        if (size.width) embed.style.width = size.width;
+
+        const renderData: RenderData = { type: 'file', content: cleanSrc, sourcePath, ...size };
         const renderChild = new MolstarRenderChild(container, renderData, this.app, this.settings);
 
         await renderChild.onload();

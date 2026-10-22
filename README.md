@@ -15,6 +15,7 @@ ChemRender3D brings the [Mol*](https://molstar.org/) molecular viewer directly i
 * **Multiple representations** — Explore structures using molecular, ribbon, surface, and illustrative styles.
 * **Molecular interactions** — Detect hydrogen bonds, salt bridges, and other non-covalent interactions.
 * **Performance controls** — Adjust rendering quality for large molecular structures.
+* **Sized embeds** — Set a viewer's width and height with Obsidian's `|WIDTHxHEIGHT` suffix.
 
 
 
@@ -78,6 +79,26 @@ Embed a supported file directly in your note:
 ```
 
 ChemRender3D automatically replaces the file embed with an interactive 3D viewer.
+
+### Set the viewer size
+
+Use Obsidian's usual embed size suffix, in pixels:
+
+```markdown
+![[hemoglobin.pdb|200x500]]   <!-- 200 px wide, 500 px high -->
+
+![[hemoglobin.pdb|300]]       <!-- 300 px wide, default height -->
+```
+
+As with images, a width on its own leaves the height alone — the viewer keeps the
+**Viewer Height** from the plugin settings. The same suffix works inside `3dmol`,
+`2dmol` and `file:` links:
+
+````markdown
+```3dmol
+[[aspirin.mol|640x480]]
+```
+````
 
 ### Embed a saved Mol* session
 
