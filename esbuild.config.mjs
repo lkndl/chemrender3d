@@ -26,6 +26,27 @@ const sanitizeObsidianPlugin = {
     }
 };
 
+// Obsidian's renderer is a browser that happens to expose `process`, so Mol* reads
+// RUNNING_IN_NODEJS as true and picks its CLI paths: the `canvas` module for text,
+// `fs` for file:// URLs, a stand-in File class. Tell it the truth instead.
+const molstarIsBrowserPlugin = {
+    name: 'molstar-is-browser',
+    setup(build) {
+        let aliased = false;
+        build.onLoad({ filter: /mol-util[\/\\]nodejs-shims\.js$/ }, () => {
+            aliased = true;
+            return {
+                contents: 'export const RUNNING_IN_NODEJS = false;\nexport const File_ = File;\n',
+                loader: 'js',
+            };
+        });
+        // A moved or renamed shims file would silently restore the CLI paths.
+        build.onEnd(() => {
+            if (!aliased) throw new Error('molstar-is-browser: nodejs-shims not found, check the path');
+        });
+    }
+};
+
 const context = await esbuild.context({
     entryPoints: ["main.ts"],
     bundle: true,
@@ -53,7 +74,7 @@ const context = await esbuild.context({
     outdir: ".",
     // FORCE minification in production to fix the "larger than 5 MB" warning
     minify: prod, 
-    plugins: [sanitizeObsidianPlugin], // Inject our sanitizer
+    plugins: [molstarIsBrowserPlugin, sanitizeObsidianPlugin], // Inject our sanitizer
 });
 
 if (prod) {

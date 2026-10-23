@@ -3,7 +3,6 @@ import { createPluginUI } from 'molstar/lib/mol-plugin-ui';
 import { renderReact18 } from 'molstar/lib/mol-plugin-ui/react18';
 import { Color } from 'molstar/lib/mol-util/color';
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
-import { setCanvasModule } from 'molstar/lib/mol-geo/geometry/text/font-atlas';
 
 // --- Global Silencing of Mol* duplicate registration spam ---
 const origConsoleWarn = console.warn;
@@ -11,17 +10,6 @@ console.warn = (...args: any[]) => {
     if (typeof args[0] === 'string' && (args[0].includes('already added') || args[0].includes('computed.accessible-surface-area'))) return;
     origConsoleWarn.apply(console, args);
 };
-
-// Obsidian is Electron, so Mol* sees process.versions.node and asks for the `canvas`
-// module to draw text. Point it at the DOM instead.
-setCanvasModule({
-    createCanvas: (width: number, height: number) => {
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        return canvas;
-    },
-});
 
 // Periodic table dictionary for element colors and inspection
 const ELEMENT_DATA: Record<string, { name: string; number: number; mass: number; color: string }> = {
