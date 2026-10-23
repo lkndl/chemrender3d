@@ -62,6 +62,14 @@ interface RenderData extends EmbedSize {
     supercell?: string;
 }
 
+// A viewer held by the live preview; parked means its embed is off-screen.
+interface LiveEmbed {
+    child: MolstarRenderChild;
+    path: string;
+    size: EmbedSize;
+    parked: boolean;
+}
+
 interface ChemRender3DSettings {
     autoPlayTrajectory: boolean;
     autoSpinCamera: boolean;
@@ -76,6 +84,29 @@ interface ChemRender3DSettings {
     gridMaxFiles: number;
     defaultGridColumns: number;
     poscarSupercell: string;
+}
+
+// Scrolled-out viewers are parked, not rebuilt: reloading a session costs seconds.
+// Each holds a WebGL context and a window only gets ~16 across all panes, so the
+// registry is global, capped by count and by age.
+const MAX_PARKED_VIEWERS = 6;
+const PARKED_VIEWER_TTL_MS = 60000;
+const parkedViewers = new Map<HTMLElement, { since: number; release: () => void }>();
+
+function parkViewer(el: HTMLElement, release: () => void) {
+    parkedViewers.set(el, { since: Date.now(), release });
+    trimParkedViewers();
+}
+
+function trimParkedViewers() {
+    const expiry = Date.now() - PARKED_VIEWER_TTL_MS;
+    // Oldest first, so the scan can stop early.
+    const byAge = Array.from(parkedViewers.entries()).sort((a, b) => a[1].since - b[1].since);
+    for (const [el, parked] of byAge) {
+        if (parked.since > expiry && parkedViewers.size <= MAX_PARKED_VIEWERS) break;
+        parkedViewers.delete(el);
+        parked.release();
+    }
 }
 
 const DEFAULT_SETTINGS: ChemRender3DSettings = {
@@ -1038,6 +1069,20 @@ class MolstarRenderChild extends MarkdownRenderChild {
         } catch (_) {}
     }
 
+    /** Pause an off-screen viewer. Mol*'s resume() only clears the flag, animate() restarts the loop. */
+    setPaused(paused: boolean) {
+        const canvas3d = this.pluginInstance?.canvas3d;
+        if (!canvas3d) return;
+        try {
+            if (paused) {
+                canvas3d.pause(true);
+            } else {
+                canvas3d.animate();
+                this.pluginInstance?.handleResize();
+            }
+        } catch (_) {}
+    }
+
     /**
      * Load a saved Mol* session (.molx zip / .molj JSON) straight into the plugin state.
      * Mol*'s own `open` swallows read errors and only logs them, so success is detected
@@ -1538,9 +1583,10 @@ export default class ChemRender3DPlugin extends Plugin {
         return ViewPlugin.fromClass(class {
             // Obsidian reuses the embed element when only the alias changes, so the
             // rendered spec is tracked here to tell a resize from a different file.
-            activeEmbeds = new Map<HTMLElement, { child: MolstarRenderChild; path: string; size: EmbedSize }>();
+            activeEmbeds = new Map<HTMLElement, LiveEmbed>();
             pending = new Set<HTMLElement>();
             debounceTimer: number | null = null;
+            destroyed = false;
 
             constructor(public view: EditorView) {
                 this.processEmbeds();
@@ -1553,12 +1599,43 @@ export default class ChemRender3DPlugin extends Plugin {
                 }
             }
 
+            /** Park a viewer that left the viewport. */
+            park(el: HTMLElement, active: LiveEmbed) {
+                if (active.parked) return;
+                active.parked = true;
+                active.child.setPaused(true);
+                parkViewer(el, () => this.release(el));
+            }
+
+            /** Drop a parked viewer, leaving its element fit to render again. */
+            release(el: HTMLElement) {
+                const active = this.activeEmbeds.get(el);
+                if (!active) return;
+                active.child.onunload();
+                this.activeEmbeds.delete(el);
+                // A dead wrapper plus the marker would make processEmbeds skip this for good.
+                el.empty();
+                el.removeAttribute('data-chem3d-preview-done');
+            }
+
             processEmbeds() {
+                trimParkedViewers();
+
+                // Obsidian hands the same element back on scroll, so park, don't tear down.
+                const detached: HTMLElement[] = [];
                 for (const [el, active] of this.activeEmbeds.entries()) {
                     if (!this.view.dom.contains(el)) {
-                        active.child.onunload();
-                        this.activeEmbeds.delete(el);
+                        if (!active.parked) detached.push(el);
+                    } else if (active.parked) {
+                        parkedViewers.delete(el);
+                        active.parked = false;
+                        active.child.setPaused(false);
                     }
+                }
+                // Parking can release other viewers, so it runs outside the iteration.
+                for (const el of detached) {
+                    const active = this.activeEmbeds.get(el);
+                    if (active) this.park(el, active);
                 }
 
                 const embeds = Array.from(this.view.dom.querySelectorAll('.internal-embed'));
@@ -1606,7 +1683,15 @@ export default class ChemRender3DPlugin extends Plugin {
 
                     plugin.injectNativeEmbedLivePreview(el, cleanSrc, sourcePath, size)
                         .then(child => {
-                            if (child) this.activeEmbeds.set(el, { child, path: cleanSrc, size });
+                            if (!child) return;
+                            // The pane can close, or the line scroll away, while a session loads.
+                            if (this.destroyed) {
+                                child.onunload();
+                                return;
+                            }
+                            const active: LiveEmbed = { child, path: cleanSrc, size, parked: false };
+                            this.activeEmbeds.set(el, active);
+                            if (!this.view.dom.contains(el)) this.park(el, active);
                         })
                         .finally(() => this.pending.delete(el))
                         .catch(() => {});
@@ -1614,8 +1699,10 @@ export default class ChemRender3DPlugin extends Plugin {
             }
 
             destroy() {
+                this.destroyed = true;
                 if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
-                for (const active of this.activeEmbeds.values()) {
+                for (const [el, active] of this.activeEmbeds.entries()) {
+                    parkedViewers.delete(el);
                     active.child.onunload();
                 }
                 this.activeEmbeds.clear();
