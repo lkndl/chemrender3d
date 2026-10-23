@@ -1585,6 +1585,8 @@ export default class ChemRender3DPlugin extends Plugin {
             // rendered spec is tracked here to tell a resize from a different file.
             activeEmbeds = new Map<HTMLElement, LiveEmbed>();
             pending = new Set<HTMLElement>();
+            // A missing file leaves no wrapper behind, so remember the miss instead.
+            failedEmbeds = new WeakMap<HTMLElement, string>();
             debounceTimer: number | null = null;
             destroyed = false;
 
@@ -1650,6 +1652,9 @@ export default class ChemRender3DPlugin extends Plugin {
 
                     const el = embed as HTMLElement;
                     if (this.pending.has(el)) return;
+                    // Without this the marker dance below rebuilds the error box every pass.
+                    // Creating the file retries once Obsidian rebuilds the element.
+                    if (this.failedEmbeds.get(el) === cleanSrc) return;
 
                     const active = this.activeEmbeds.get(el);
                     if (active) {
@@ -1683,7 +1688,10 @@ export default class ChemRender3DPlugin extends Plugin {
 
                     plugin.injectNativeEmbedLivePreview(el, cleanSrc, sourcePath, size)
                         .then(child => {
-                            if (!child) return;
+                            if (!child) {
+                                this.failedEmbeds.set(el, cleanSrc);
+                                return;
+                            }
                             // The pane can close, or the line scroll away, while a session loads.
                             if (this.destroyed) {
                                 child.onunload();
